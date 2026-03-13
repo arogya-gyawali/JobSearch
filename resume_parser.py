@@ -28,6 +28,7 @@ TECHNOLOGIES = {
     "firebase", "heroku", "vercel", "netlify", "jenkins", "github actions", "ci/cd",
     "terraform", "ansible", "linux", "unix", "git", "mongodb", "postgresql", "postgres",
     "mysql", "redis", "elasticsearch", "kafka", "rabbitmq", "graphql", "rest",
+    "excel", "matplotlib", "seaborn", "ollama",
     "restful", "grpc", "apache", "nginx", "hadoop", "spark", "airflow", "dbt",
     "tableau", "power bi", "streamlit", "gradio", "langchain", "openai", "huggingface",
     "transformers", "bert", "gpt", "llm", "rag", "vector database", "pinecone",
@@ -208,6 +209,12 @@ def _extract_projects(sections: dict) -> list[dict]:
                 current_project["description"] += " " + desc_line
             else:
                 current_project["description"] = desc_line
+        elif not is_bullet and current_project and not re.search(r"[\(\)].*\d{4}", stripped) and len(stripped) < 80 and stripped[0].islower():
+            # Continuation of a wrapped bullet line (starts lowercase, no year marker)
+            if current_project["description"]:
+                current_project["description"] += " " + stripped
+            else:
+                current_project["description"] = stripped
         elif not is_bullet:
             # This is a project title line
             if current_project:
@@ -247,24 +254,38 @@ def _extract_experience(sections: dict) -> list[dict]:
         if not stripped:
             continue
 
-        # Look for lines with " — " or " - " or " | " separators (Company — Title pattern)
+        # Look for lines with " — " or " - " separators (Title — Organization pattern)
         if (not line.startswith(" ") and not line.startswith("-") and not line.startswith("•")
                 and len(stripped) < 120):
-            # Check if it looks like a job title line
-            separators = [" — ", " - ", " | ", ", "]
+            # Check if this is a date/duration line first (e.g., "Company | Aug 2022 - May 2023")
+            date_line_match = re.search(r"\|\s*(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)", stripped, re.IGNORECASE)
+            if date_line_match and current_exp:
+                current_exp["duration"] = stripped
+                continue
+
+            # Check for title — company separators
+            separators = [" — ", " - "]
+            matched_sep = False
             for sep in separators:
                 if sep in stripped:
                     parts = stripped.split(sep, 1)
                     if current_exp:
                         experiences.append(current_exp)
-                    current_exp = {
-                        "company": parts[0].strip(),
-                        "title": parts[1].strip() if len(parts) > 1 else "",
-                        "duration": "",
-                        "description": "",
-                    }
+                    left = parts[0].strip()
+                    right = parts[1].strip() if len(parts) > 1 else ""
+                    # Heuristic: if left looks like a job title (VP, Manager, Intern, etc.)
+                    # then left=title, right=company. Otherwise left=company, right=title.
+                    title_keywords = ["president", "vice", "manager", "director", "intern",
+                                      "engineer", "developer", "analyst", "lead", "officer",
+                                      "official", "coordinator", "assistant", "associate"]
+                    left_is_title = any(kw in left.lower() for kw in title_keywords)
+                    if left_is_title:
+                        current_exp = {"company": right, "title": left, "duration": "", "description": ""}
+                    else:
+                        current_exp = {"company": left, "title": right, "duration": "", "description": ""}
+                    matched_sep = True
                     break
-            else:
+            if not matched_sep:
                 # Might be a duration line or continuation
                 if current_exp and re.search(r"\d{4}", stripped):
                     current_exp["duration"] = stripped
@@ -307,13 +328,16 @@ def _extract_education(sections: dict) -> list[dict]:
         if grad_match:
             entry["graduation"] = grad_match.group(0).strip()
 
-        # Degree
-        degree_match = re.search(r"(Bachelor|Master|Ph\.?D|Associate|B\.?S\.?|M\.?S\.?|B\.?A\.?|M\.?A\.?)[^,\n]*", stripped, re.IGNORECASE)
-        if degree_match:
-            entry["degree"] = degree_match.group(0).strip()
+        # Degree — only match on lines that start with the degree keyword (not coursework lines)
+        if not stripped.lower().startswith("relevant coursework"):
+            degree_match = re.search(r"^(Bachelor|Master|Ph\.?D|Associate|B\.?S\.?|M\.?S\.?|B\.?A\.?|M\.?A\.?)[^,\n]*", stripped, re.IGNORECASE)
+            if degree_match:
+                entry["degree"] = degree_match.group(0).strip()
 
-        # Institution — typically the first substantial line
-        if not entry["institution"] and len(stripped) > 5 and not stripped.startswith("-"):
+        # Institution — typically the first substantial line (not coursework, not cert)
+        if (not entry["institution"] and len(stripped) > 5
+                and not stripped.startswith("-") and not stripped.lower().startswith("relevant")
+                and not stripped.lower().startswith("google") and not stripped.lower().startswith("coursera")):
             entry["institution"] = stripped
 
         # Field
@@ -324,6 +348,24 @@ def _extract_education(sections: dict) -> list[dict]:
     if entry["institution"]:
         education.append(entry)
     return education
+
+
+def _extract_certifications(sections: dict) -> list[str]:
+    """Extract certifications from education or certifications section."""
+    certs = []
+    # Check both education and certifications sections
+    for section_key in ["education", "certifications"]:
+        text = sections.get(section_key, "")
+        if not text:
+            continue
+        for line in text.strip().split("\n"):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # Match lines that look like certifications (Google, Coursera, AWS, etc.)
+            if re.search(r"(google|coursera|aws|microsoft|meta|ibm|credential|certificate)", stripped, re.IGNORECASE):
+                certs.append(stripped)
+    return certs
 
 
 def _infer_experience_level(text: str, experience: list) -> str:
@@ -377,7 +419,7 @@ def parse_resume(filepath: str) -> dict:
         "projects": projects,
         "education": education,
         "experience": experience,
-        "certifications": [],
+        "certifications": _extract_certifications(sections),
         "keywords": keywords,
         "domains": domains,
         "experience_level": _infer_experience_level(raw_text, experience),
