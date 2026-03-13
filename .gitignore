@@ -1,0 +1,26 @@
+# Secrets & config
+.env
+credentials.json
+
+# Database
+*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Generated output
+applications/
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Resumes (personal docs — add your own)
+resumes/*.docx
+resumes/*.pdf
+resumes/*.txt
